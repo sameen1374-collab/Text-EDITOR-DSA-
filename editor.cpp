@@ -1,0 +1,803 @@
+// ===== SECTION 0: includes, Position, EditorError, helpers =====
+#include <iostream>    // cout, cin
+#include <fstream>     // reading and writing files
+#include <string>      // string
+#include <stdexcept>   // runtime_error (used by EditorError)
+#include <cstdlib>     // exit
+using namespace std;
+
+// A spot in the document. Inside the code BOTH numbers count from 0.
+// (The user types from 1; only the menu converts.)
+struct Position {
+    int line;   // which line (0 = first line)
+    int col;    // which letter on that line (0 = before the first letter)
+};
+
+// Every problem in the editor is reported by throwing one of these.
+// Example:  throw EditorError("Line number out of range");
+// The menu catches it and shows the message with e.what().
+class EditorError : public runtime_error {
+public:
+    EditorError(const string& message) : runtime_error(message) {}
+};
+
+// Is spot a strictly before spot b?
+bool isBefore(Position a, Position b) {
+    if (a.line < b.line) return true;
+    if (a.line > b.line) return false;
+    return a.col < b.col;           // same line: compare the letter numbers
+}
+
+// Are the two spots exactly the same?
+bool isSame(Position a, Position b) {
+    return a.line == b.line && a.col == b.col;
+}
+
+// A "word letter" is a letter, a digit or an underscore.
+bool isWordChar(char c) {
+    if (c >= 'a' && c <= 'z') return true;
+    if (c >= 'A' && c <= 'Z') return true;
+    if (c >= '0' && c <= '9') return true;
+    if (c == '_') return true;
+    return false;
+}
+
+// Turns a capital letter into a small one. Everything else stays the same.
+char toLowerChar(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return (char)(c - 'A' + 'a');
+    }
+    return c;
+}
+
+// Where does the text END if we insert it at spot 'start'?
+//   no line break in text -> same line, further right
+//   with line breaks      -> that many lines lower; the column is the
+//                            length of the text after the last line break
+Position endOf(Position start, const string& text) {
+    int breaks = 0;        // how many '\n' are in the text
+    int lastBreak = -1;    // position of the last '\n' (-1 = none)
+    for (int i = 0; i < (int)text.size(); i++) {
+        if (text[i] == '\n') {
+            breaks++;
+            lastBreak = i;
+        }
+    }
+
+    Position result;
+    if (breaks == 0) {
+        result.line = start.line;
+        result.col  = start.col + (int)text.size();
+    } else {
+        result.line = start.line + breaks;
+        result.col  = (int)text.size() - lastBreak - 1;
+    }
+    return result;
+}
+
+// ===== SECTION 1: Line list (M1) =====
+
+
+// STEP 1: one card = one line of the document
+struct Line {
+    string text;   // the words on this line
+    Line* prev;    // the card above (nullptr if this is the first card)
+    Line* next;    // the card below (nullptr if this is the last card)
+};
+
+class LineList {
+private:
+    Line* head;    // the first card
+    Line* tail;    // the last card
+    int count;     // how many cards there are
+
+public:
+    // STEP 2: start empty, and clean up when the program ends
+    LineList() {
+        head = nullptr;
+        tail = nullptr;
+        count = 0;
+    }
+    ~LineList() {
+        clear();
+    }
+    LineList(const LineList&) = delete;              // copying is not allowed
+    LineList& operator=(const LineList&) = delete;   // (it would cause double-delete bugs)
+
+    int size() const { return count; }
+    Line* first() const { return head; }
+    Line* last() const { return tail; }
+
+    // STEP 3: add a new card at the END
+    void append(const string& text) {
+        Line* card = new Line;
+        card->text = text;
+        card->prev = tail;          // the old last card is above the new one
+        card->next = nullptr;       // nothing is below the new last card
+        if (tail == nullptr) {
+            head = card;            // the list was empty: it is also the first card
+        } else {
+            tail->next = card;      // the old last card now points down to the new one
+        }
+        tail = card;
+        count++;
+    }
+
+    // STEP 4: find card number i (0 = first card)
+    Line* getNode(int i) const {
+        if (i < 0 || i >= count) {
+            throw EditorError("Line number out of range");
+        }
+        Line* card;
+        if (i < count / 2) {                     // closer to the top: walk down from head
+            card = head;
+            for (int k = 0; k < i; k++) {
+                card = card->next;
+            }
+        } else {                                 // closer to the bottom: walk up from tail
+            card = tail;
+            for (int k = count - 1; k > i; k--) {
+                card = card->prev;
+            }
+        }
+        return card;
+    }
+
+    // STEP 5: add a new card right BELOW the card 'card'
+    Line* insertAfter(Line* card, const string& text) {
+        if (card == nullptr) {
+            throw EditorError("Cannot insert after nothing");
+        }
+        Line* fresh = new Line;
+        fresh->text = text;
+        fresh->prev = card;              // the new card sits below 'card'
+        fresh->next = card->next;        // and above whatever was below 'card'
+        if (card->next != nullptr) {
+            card->next->prev = fresh;    // the card below now points back up to the new one
+        } else {
+            tail = fresh;                // 'card' was the last card, so the new one is last
+        }
+        card->next = fresh;
+        count++;
+        return fresh;
+    }
+
+    // STEP 6: take a card out and delete it
+    void removeNode(Line* card) {
+        if (card == nullptr) {
+            throw EditorError("Cannot remove nothing");
+        }
+        if (card->prev != nullptr) {
+            card->prev->next = card->next;   // the card above skips over this one
+        } else {
+            head = card->next;               // this was the first card
+        }
+        if (card->next != nullptr) {
+            card->next->prev = card->prev;   // the card below skips over this one
+        } else {
+            tail = card->prev;               // this was the last card
+        }
+        delete card;
+        count--;
+    }
+
+    // STEP 7: delete every card
+    void clear() {
+        Line* card = head;
+        while (card != nullptr) {
+            Line* below = card->next;        // remember the next card BEFORE deleting this one
+            delete card;
+            card = below;
+        }
+        head = nullptr;
+        tail = nullptr;
+        count = 0;
+    }
+
+    // STEP 8: self-check. Call it in tests; it throws if any link is broken.
+    void checkIntegrity() const {
+        int n = 0;
+        Line* before = nullptr;
+        for (Line* card = head; card != nullptr; card = card->next) {
+            if (card->prev != before) throw EditorError("prev link is broken");
+            before = card;
+            n++;
+            if (n > count) throw EditorError("count is wrong (or the list loops)");
+        }
+        if (before != tail) throw EditorError("tail is wrong");
+        if (n != count) throw EditorError("count is wrong");
+    }
+};
+
+
+// ===== SECTION 2: Stack (+ the Operation note it will hold) =====
+
+// A pile of plates. You only add or remove at the TOP.
+// "template <typename T>" means: T is a placeholder for any type,
+// so  Stack<int>  is a pile of ints and  Stack<Operation>  is a pile of undo notes.
+template <typename T>
+class Stack {
+private:
+    struct StackNode {
+        T data;              // the item stored on this plate
+        StackNode* below;    // the plate underneath (nullptr if this is the bottom plate)
+    };
+    StackNode* topNode;      // the plate on top (nullptr if the pile is empty)
+    int count;               // how many plates
+
+public:
+    Stack() {
+        topNode = nullptr;
+        count = 0;
+    }
+    ~Stack() {
+        clear();
+    }
+    Stack(const Stack&) = delete;              // copying is not allowed
+    Stack& operator=(const Stack&) = delete;
+
+    bool isEmpty() const { return topNode == nullptr; }
+    int size() const { return count; }
+
+    // put an item on top
+    void push(const T& item) {
+        StackNode* plate = new StackNode;
+        plate->data = item;
+        plate->below = topNode;     // the new plate sits on the old top plate
+        topNode = plate;            // and becomes the new top
+        count++;
+    }
+
+    // take the top item off and give it back
+    T pop() {
+        if (topNode == nullptr) {
+            throw EditorError("Stack is empty");
+        }
+        StackNode* plate = topNode;
+        T item = plate->data;       // copy the item out BEFORE deleting the plate
+        topNode = plate->below;
+        delete plate;
+        count--;
+        return item;
+    }
+
+    // look at the top item without removing it
+    T& top() {
+        if (topNode == nullptr) {
+            throw EditorError("Stack is empty");
+        }
+        return topNode->data;
+    }
+
+    // throw away every plate
+    void clear() {
+        while (topNode != nullptr) {
+            StackNode* plate = topNode;
+            topNode = plate->below;
+            delete plate;
+        }
+        count = 0;
+    }
+};
+
+// One note on the undo pile: what happened to the document.
+enum class OpType { Insert, Delete };   // was text ADDED or REMOVED?
+
+struct Operation {
+    OpType type;       // Insert or Delete
+    Position start;    // where it happened (0-based)
+    string text;       // the text that was added / removed (may contain '\n')
+    int group;         // notes with the same number are undone together
+};
+
+
+// ===== SECTION 3: DynArray (a row of boxes that grows) + Match =====
+
+// A row of numbered boxes (0, 1, 2, ...). When it gets full it makes a
+// row TWICE as big, copies everything across, and carries on.
+// Used for lists whose size is not known in advance (like search results).
+template <typename T>
+class DynArray {
+private:
+    T* items;        // the row of boxes
+    int count;       // how many boxes are used
+    int capacity;    // how many boxes exist
+
+public:
+    DynArray() {
+        items = nullptr;
+        count = 0;
+        capacity = 0;
+    }
+    ~DynArray() {
+        delete[] items;
+    }
+    DynArray(const DynArray&) = delete;              // copying is not allowed
+    DynArray& operator=(const DynArray&) = delete;
+
+    int size() const { return count; }
+
+    // add one item at the end
+    void add(const T& item) {
+        T copy = item;                               // copy FIRST (item might live inside this array)
+        if (count == capacity) {                     // the row is full: make a bigger one
+            int newCapacity;
+            if (capacity == 0) {
+                newCapacity = 4;
+            } else {
+                newCapacity = capacity * 2;
+            }
+            T* bigger = new T[newCapacity];
+            for (int i = 0; i < count; i++) {
+                bigger[i] = items[i];                // copy the old items across
+            }
+            delete[] items;                          // free the old row
+            items = bigger;
+            capacity = newCapacity;
+        }
+        items[count] = copy;
+        count++;
+    }
+
+    // get the item in box i (0 = first box)
+    T& get(int i) {
+        if (i < 0 || i >= count) {
+            throw EditorError("Index out of range");
+        }
+        return items[i];
+    }
+
+    // same thing, for arrays that are marked const (read only)
+    const T& get(int i) const {
+        if (i < 0 || i >= count) {
+            throw EditorError("Index out of range");
+        }
+        return items[i];
+    }
+
+    // forget all items (the boxes stay, ready to be reused)
+    void clear() {
+        count = 0;
+    }
+};
+
+// One search result: where a match was found (0-based).
+struct Match {
+    int line;
+    int col;
+};
+
+// ===== SECTION 4: Document class (declaration only: every function name listed) =====
+
+class Document {
+private:
+    LineList lines;               // the document: one card per line (never empty: at least 1 line)
+    Stack<Operation> undoStack;   // notes for UNDO
+    Stack<Operation> redoStack;   // notes for REDO
+    string filename;              // "" = not saved yet
+    bool dirty;                   // true = there are unsaved changes
+    int nextGroupId;              // next group number to hand out
+    int activeGroup;              // -1 = no group is open
+    string clipboard; 
+
+    void record(const Operation& note);        // put a note on the undo pile
+    void checkPosition(Position p) const;      // throws EditorError if p is not a real spot
+
+public:
+    Document();
+
+    // ---- Step 2: the two basic actions + display (Section 5) ----
+    void   insertAt(Position pos, const string& text, bool saveNote = true);
+    string deleteRange(Position a, Position b, bool saveNote = true);   // b is NOT included
+    string getText(Position a, Position b) const;                       // read only
+    string render() const;                                              // whole document, with line numbers
+    string renderLines(int firstLine, int lastLine) const;              // some lines, with line numbers
+    int    lineCount() const;
+    int    charCount() const;
+    bool   isEmpty() const;
+    bool   isDirty() const { return dirty; }
+
+    // ---- later steps (declared now, written later in Section 6) ----
+    // files
+    void newDocument();
+    void openFile(const string& path);
+    void saveFile();
+    void saveFileAs(const string& path);
+    bool hasFilename() const { return !filename.empty(); }
+    // insert
+    void insertText(Position pos, const string& text);
+    void insertNewLine(Position pos);
+    void insertBlankLineAfter(int line);
+    void insertBlankLineBefore(int line);
+    // delete
+    void deleteChar(Position pos);
+    void deleteWord(Position pos);
+    void deleteLines(int firstLine, int lastLine);
+    // undo / redo
+    void beginGroup();
+    void endGroup();
+    void undo();
+    void redo();
+    // search / replace
+    void findAll(const string& pattern, bool ignoreCase, bool wholeWord, DynArray<Match>& found) const;
+    void replaceOne(const string& pattern, const string& replacement, int k, bool ignoreCase, bool wholeWord);
+    int  replaceAll(const string& pattern, const string& replacement, bool ignoreCase, bool wholeWord);
+    // cut / copy / paste
+    void copyRange(Position a, Position b);
+    void copyLines(int firstLine, int lastLine);
+    void cutRange(Position a, Position b);
+    void cutLines(int firstLine, int lastLine);
+    void pasteAt(Position pos);
+    void pasteLinesBefore(int line);
+};
+
+// ===== SECTION 5: the two basic actions + display =====
+
+// ---------- start: the document always has at least one line ----------
+Document::Document() {
+    filename = "";
+    dirty = false;
+    nextGroupId = 0;
+    activeGroup = -1;
+    lines.append("");             // one empty line = an "empty document"
+}
+
+// ---------- helper: put a note on the undo pile ----------
+void Document::record(const Operation& note) {
+    Operation copy = note;
+    if (activeGroup != -1) {
+        copy.group = activeGroup;          // inside a group: share its number
+    } else {
+        copy.group = nextGroupId;          // alone: take a fresh number
+        nextGroupId++;
+    }
+    undoStack.push(copy);
+    redoStack.clear();                     // a new edit makes the old redo notes useless
+}
+
+// ---------- helper: is p a real spot? ----------
+void Document::checkPosition(Position p) const {
+    if (p.line < 0 || p.line >= lines.size()) {
+        throw EditorError("Line number out of range");
+    }
+    Line* card = lines.getNode(p.line);
+    if (p.col < 0 || p.col > (int)card->text.size()) {
+        throw EditorError("Column out of range");
+    }
+}
+
+// ---------- BASIC ACTION 1: add text at a spot ----------
+void Document::insertAt(Position pos, const string& text, bool saveNote) {
+    // 1. check everything BEFORE changing anything
+    if (text.empty()) {
+        throw EditorError("Nothing to insert");
+    }
+    checkPosition(pos);
+
+    // 2. split the line at the spot into a left part and a right part
+    Line* card = lines.getNode(pos.line);
+    string left = card->text.substr(0, pos.col);
+    string right = card->text.substr(pos.col);
+
+    // 3. cut the new text into pieces at every line break
+    DynArray<string> pieces;
+    string part = "";
+    for (int i = 0; i < (int)text.size(); i++) {
+        if (text[i] == '\n') {
+            pieces.add(part);
+            part = "";
+        } else {
+            part += text[i];
+        }
+    }
+    pieces.add(part);                      // the last piece (there is always at least one)
+
+    // 4. put the pieces into the document
+    if (pieces.size() == 1) {
+        card->text = left + pieces.get(0) + right;          // no line break: one line grows
+    } else {
+        card->text = left + pieces.get(0);                   // first piece joins the left part
+        Line* cursor = card;
+        for (int i = 1; i < pieces.size() - 1; i++) {        // middle pieces become new lines
+            cursor = lines.insertAfter(cursor, pieces.get(i));
+        }
+        lines.insertAfter(cursor, pieces.get(pieces.size() - 1) + right);  // last piece + right part
+    }
+
+    // 5. remember it for undo
+    if (saveNote) {
+        Operation note;
+        note.type = OpType::Insert;
+        note.start = pos;
+        note.text = text;
+        note.group = 0;                    // record() gives the real group number
+        record(note);
+    }
+    dirty = true;
+}
+
+// ---------- read the text between two spots (changes nothing) ----------
+string Document::getText(Position a, Position b) const {
+    checkPosition(a);
+    checkPosition(b);
+    if (!isBefore(a, b)) {
+        throw EditorError("Start must come before end");
+    }
+
+    Line* cardA = lines.getNode(a.line);
+    if (a.line == b.line) {
+        return cardA->text.substr(a.col, b.col - a.col);     // all on one line
+    }
+
+    string result = cardA->text.substr(a.col);               // the rest of A's line
+    Line* card = cardA->next;
+    for (int i = a.line + 1; i < b.line; i++) {              // every line in between
+        result += "\n" + card->text;
+        card = card->next;
+    }
+    result += "\n" + card->text.substr(0, b.col);            // the start of B's line
+    return result;
+}
+
+// ---------- BASIC ACTION 2: remove text between two spots ----------
+string Document::deleteRange(Position a, Position b, bool saveNote) {
+    // 1. check everything and copy the text out (getText checks the spots for us)
+    string removed = getText(a, b);
+
+    // 2. remove it
+    Line* cardA = lines.getNode(a.line);
+    if (a.line == b.line) {
+        cardA->text = cardA->text.substr(0, a.col) + cardA->text.substr(b.col);
+    } else {
+        Line* cardB = lines.getNode(b.line);
+        // A's line = what is before a  +  what is after b (on B's line)
+        cardA->text = cardA->text.substr(0, a.col) + cardB->text.substr(b.col);
+        // every line below A, up to and including B, is now unnecessary
+        int howMany = b.line - a.line;
+        for (int i = 0; i < howMany; i++) {
+            lines.removeNode(cardA->next);
+        }
+    }
+
+    // 3. remember it for undo
+    if (saveNote) {
+        Operation note;
+        note.type = OpType::Delete;
+        note.start = a;
+        note.text = removed;
+        note.group = 0;
+        record(note);
+    }
+    dirty = true;
+    return removed;
+}
+
+// ---------- display ----------
+int Document::lineCount() const {
+    return lines.size();
+}
+
+int Document::charCount() const {
+    int total = 0;
+    for (Line* card = lines.first(); card != nullptr; card = card->next) {
+        total += (int)card->text.size();       // line breaks are not counted
+    }
+    return total;
+}
+
+bool Document::isEmpty() const {
+    return lines.size() == 1 && lines.first()->text.empty();
+}
+
+// some lines, each with its line number (numbers are added only here, never stored)
+string Document::renderLines(int firstLine, int lastLine) const {
+    if (firstLine < 0 || lastLine >= lines.size() || firstLine > lastLine) {
+        throw EditorError("Line range out of range");
+    }
+    int width = (int)to_string(lines.size()).size();      // so the numbers line up
+    string out = "";
+    Line* card = lines.getNode(firstLine);
+    for (int i = firstLine; i <= lastLine; i++) {
+        string number = to_string(i + 1);                 // the user counts from 1
+        while ((int)number.size() < width) {
+            number = " " + number;
+        }
+        out += number + " | " + card->text + "\n";
+        card = card->next;
+    }
+    return out;
+}
+
+string Document::render() const {
+    if (isEmpty()) {
+        return "(empty document)\n";
+    }
+    return renderLines(0, lines.size() - 1);
+}
+
+// ===== SECTION 6: files, insert, delete, search, replace, undo, clipboard =====
+// Paste this whole block into main.cpp, right after Section 5.
+// Rule: each person edits ONLY the sub-section that carries their name.
+// Every stub throws EditorError("TODO") so the file always compiles.
+
+
+// ---------- 6A. FILES + (see 6D for undo) ----------  OWNER: MEMBER A
+void Document::newDocument()                      { throw EditorError("TODO"); }
+void Document::openFile(const string& path)       { (void)path; throw EditorError("TODO"); }
+void Document::saveFile()                         { throw EditorError("TODO"); }
+void Document::saveFileAs(const string& path)     { (void)path; throw EditorError("TODO"); }
+
+
+// ---------- 6B. INSERT ----------  OWNER: STARTER (done)
+
+// Add text at a spot. insertAt already checks the spot, rejects empty text
+// and splits at every '\n', so this is just the public entry point.
+void Document::insertText(Position pos, const string& text) {
+    insertAt(pos, text);
+}
+
+// Press Enter at a spot: the line splits in two.
+// A line break is just the character '\n', which insertAt already understands.
+void Document::insertNewLine(Position pos) {
+    insertAt(pos, "\n");
+}
+
+// Add an empty line right BELOW line number 'line' (0-based).
+// Trick: put a '\n' at the END of that line. The text after it (nothing) becomes the new line.
+void Document::insertBlankLineAfter(int line) {
+    Line* card = lines.getNode(line);                 // throws if 'line' is out of range
+    Position endOfLine;
+    endOfLine.line = line;
+    endOfLine.col  = (int)card->text.size();
+    insertAt(endOfLine, "\n");
+}
+
+// Add an empty line right ABOVE line number 'line' (0-based).
+// Trick: put a '\n' at the START of that line. Everything on it moves down.
+void Document::insertBlankLineBefore(int line) {
+    lines.getNode(line);                              // only used to check that 'line' exists
+    Position startOfLine;
+    startOfLine.line = line;
+    startOfLine.col  = 0;
+    insertAt(startOfLine, "\n");
+}
+
+
+// ---------- 6C. DELETE ----------
+// deleteChar and deleteWord: OWNER: MEMBER B
+void Document::deleteChar(Position pos)           { (void)pos; throw EditorError("TODO"); }
+void Document::deleteWord(Position pos)           { (void)pos; throw EditorError("TODO"); }
+
+// deleteLines: OWNER: STARTER (done). Kept by the starter because cutLines needs it.
+// Removes whole lines firstLine..lastLine (both included, 0-based) as ONE undoable step.
+// The document must never have 0 lines, so there are three cases:
+void Document::deleteLines(int firstLine, int lastLine) {
+    if (firstLine < 0 || lastLine >= lines.size() || firstLine > lastLine) {
+        throw EditorError("Line range out of range");
+    }
+
+    Position a;
+    Position b;
+
+    if (lastLine < lines.size() - 1) {
+        // CASE 1: a line exists below the range.
+        // Delete from the start of firstLine to the start of the line below.
+        // That removes the lines AND their line breaks.
+        a.line = firstLine;    a.col = 0;
+        b.line = lastLine + 1; b.col = 0;
+    } else if (firstLine > 0) {
+        // CASE 2: the range reaches the last line, but a line exists above it.
+        // Delete from the END of the line above to the end of the last line.
+        // That removes the line break above the range, and the lines themselves.
+        a.line = firstLine - 1;
+        a.col  = (int)lines.getNode(firstLine - 1)->text.size();
+        b.line = lastLine;
+        b.col  = (int)lines.getNode(lastLine)->text.size();
+    } else {
+        // CASE 3: the range is the WHOLE document.
+        // Empty it but keep one empty line.
+        if (isEmpty()) {
+            throw EditorError("Nothing to delete");   // a == b would make getText fail
+        }
+        a.line = 0;            a.col = 0;
+        b.line = lastLine;     b.col = (int)lines.getNode(lastLine)->text.size();
+    }
+
+    deleteRange(a, b);         // one note on the undo pile
+}
+
+
+// ---------- 6D. UNDO / REDO ----------  OWNER: MEMBER A
+void Document::beginGroup()                       { throw EditorError("TODO"); }
+void Document::endGroup()                         { throw EditorError("TODO"); }
+void Document::undo()                             { throw EditorError("TODO"); }
+void Document::redo()                             { throw EditorError("TODO"); }
+
+
+// ---------- 6E. SEARCH / REPLACE ----------  OWNER: MEMBER B
+void Document::findAll(const string& pattern, bool ignoreCase, bool wholeWord,
+                       DynArray<Match>& found) const {
+    (void)pattern; (void)ignoreCase; (void)wholeWord; (void)found;
+    throw EditorError("TODO");
+}
+void Document::replaceOne(const string& pattern, const string& replacement, int k,
+                          bool ignoreCase, bool wholeWord) {
+    (void)pattern; (void)replacement; (void)k; (void)ignoreCase; (void)wholeWord;
+    throw EditorError("TODO");
+}
+int Document::replaceAll(const string& pattern, const string& replacement,
+                         bool ignoreCase, bool wholeWord) {
+    (void)pattern; (void)replacement; (void)ignoreCase; (void)wholeWord;
+    throw EditorError("TODO");
+}
+
+
+// ---------- 6F. CUT / COPY / PASTE ----------  OWNER: STARTER (done)
+// The copied text lives in the private string 'clipboard' (added in Section 4).
+// Copy never changes the document, so it never touches 'dirty' or the undo pile.
+
+// Copy the text from a up to (not including) b.
+// getText checks both spots and that a comes before b, so bad input throws before clipboard changes.
+void Document::copyRange(Position a, Position b) {
+    clipboard = getText(a, b);
+}
+
+// Copy whole lines firstLine..lastLine (0-based). Lines are joined with '\n',
+// with NO '\n' after the last one.
+void Document::copyLines(int firstLine, int lastLine) {
+    if (firstLine < 0 || lastLine >= lines.size() || firstLine > lastLine) {
+        throw EditorError("Line range out of range");
+    }
+    string result = "";
+    Line* card = lines.getNode(firstLine);
+    for (int i = firstLine; i <= lastLine; i++) {
+        if (i > firstLine) {
+            result += "\n";
+        }
+        result += card->text;
+        card = card->next;
+    }
+    clipboard = result;
+}
+
+// Cut = delete, then keep what was deleted.
+// deleteRange returns the removed text and throws BEFORE changing anything if the spots are bad.
+void Document::cutRange(Position a, Position b) {
+    clipboard = deleteRange(a, b);
+}
+
+// Cut whole lines = copyLines, then deleteLines.
+// If deleteLines fails (for example an empty document), put the old clipboard back.
+void Document::cutLines(int firstLine, int lastLine) {
+    string oldClipboard = clipboard;
+    copyLines(firstLine, lastLine);
+    try {
+        deleteLines(firstLine, lastLine);
+    } catch (EditorError&) {
+        clipboard = oldClipboard;
+        throw;
+    }
+}
+
+// Insert the clipboard text at a spot.
+void Document::pasteAt(Position pos) {
+    if (clipboard.empty()) {
+        throw EditorError("Clipboard is empty");
+    }
+    insertAt(pos, clipboard);
+}
+
+// Insert the clipboard as whole new line(s) ABOVE line number 'line'.
+// Text + '\n' put at column 0 pushes the old line down.
+void Document::pasteLinesBefore(int line) {
+    if (clipboard.empty()) {
+        throw EditorError("Clipboard is empty");
+    }
+    Position startOfLine;
+    startOfLine.line = line;
+    startOfLine.col  = 0;
+    insertAt(startOfLine, clipboard + "\n");
+}
+
+
+// ===== SECTION 7: menu and main() =====  (OWNER: MEMBER C)
