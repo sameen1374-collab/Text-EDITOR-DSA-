@@ -1023,6 +1023,8 @@ void Document::findAll(const string& pattern, bool ignoreCase, bool wholeWord,
         }
     }
 
+
+
     // 2. build the KMP table ONCE for the whole search:
     //    lps[i] = how many letters at the END of p[0..i] are also the START of p
     //    (it tells us how far to fall back after a mismatch, so we never re-read the text)
@@ -1082,15 +1084,72 @@ void Document::findAll(const string& pattern, bool ignoreCase, bool wholeWord,
         lineNo++;
     }
 }
+
+// Helper for replaceOne / replaceAll: replace the 'len' letters that start at match 'm'.
+// It does NOT open an undo group itself; the caller does that.
+// It uses only public Document functions, so it needs no change to the class.
+static void replaceMatch(Document& doc, const Match& m, int len, const string& replacement) {
+    Position start;
+    start.line = m.line;
+    start.col  = m.col;
+    Position end;                       // a match never crosses a line break
+    end.line = m.line;
+    end.col  = m.col + len;
+
+    doc.deleteRange(start, end);        // remove the old text (one undo note)
+    if (!replacement.empty()) {         // insertAt rejects empty text, and an empty
+        doc.insertAt(start, replacement);   // replacement just means "delete the match"
+    }
+}
+// Replace match number k (0-based; the menu already subtracts 1) with 'replacement'.
+// One undo step, because the delete and the insert share a group.
 void Document::replaceOne(const string& pattern, const string& replacement, int k,
                           bool ignoreCase, bool wholeWord) {
-    (void)pattern; (void)replacement; (void)k; (void)ignoreCase; (void)wholeWord;
-    throw EditorError("TODO");
+    DynArray<Match> found;
+    findAll(pattern, ignoreCase, wholeWord, found);      // throws if pattern is empty
+
+    if (found.size() == 0) {
+        throw EditorError("Pattern not found");
+    }
+    if (k < 0 || k >= found.size()) {
+        throw EditorError("That match does not exist");
+    }
+
+    beginGroup();
+    try {
+        replaceMatch(*this, found.get(k), (int)pattern.size(), replacement);
+    } catch (...) {
+        endGroup();                                       // never leave a group open
+        throw;
+    }
+    endGroup();
 }
+
+// Replace every match. Returns how many were replaced.
+// Works from the LAST match to the FIRST, so a replacement never moves
+// the positions of the matches that are still waiting.
+// One undo step reverses all of it.
 int Document::replaceAll(const string& pattern, const string& replacement,
                          bool ignoreCase, bool wholeWord) {
-    (void)pattern; (void)replacement; (void)ignoreCase; (void)wholeWord;
-    throw EditorError("TODO");
+    DynArray<Match> found;
+    findAll(pattern, ignoreCase, wholeWord, found);       // search ONCE, throws if pattern is empty
+
+    int total = found.size();
+    if (total == 0) {
+        return 0;                                         // nothing to do, no group, no undo note
+    }
+
+    beginGroup();
+    try {
+        for (int i = total - 1; i >= 0; i--) {
+            replaceMatch(*this, found.get(i), (int)pattern.size(), replacement);
+        }
+    } catch (...) {
+        endGroup();
+        throw;
+    }
+    endGroup();
+    return total;
 }
 
 
@@ -1568,76 +1627,75 @@ int main(int argc, char* argv[]) {
     }
     runMenu();
     return 0;
-
-// ---------------------------------------------------------------
-// Helper: read an integer safely
-// ---------------------------------------------------------------
-int readInt(const string &prompt)
-{
-    string input;
-    while (true)
-    {
-        cout << prompt;
-        getline(cin, input);
-        try
-        {
-            return stoi(input);
-        }
-        catch (...)
-        {
-            cout << "Please type a number.\n";
-        }
-    }
 }
 
-static void menuDeleteWord(Document& doc) {
-    try {
-        int line = readInt("Line number: ") - 1;          // the user counts from 1
-        string word;
-        cout << "Word to delete: ";
-        getline(cin, word);
 
-        int which = 1;
-        int total = doc.countWordOnLine(line, word);      // throws if the line or word is bad
-        if (total == 0) {
-            throw EditorError("Word not found on that line");
-        }
-        if (total > 1) {
-            cout << "\"" << word << "\" appears " << total << " times on this line.\n";
-            which = readInt("Delete which one? (1 = leftmost): ");
-        }
-        doc.deleteWordOnLine(line, word, which);
-        cout << "Word deleted.\n";
-    } catch (EditorError& e) {
-        cout << "Error: " << e.what() << ".\n";
-    }
-}
+// int readInt(const string &prompt)
+// {
+//     string input;
+//     while (true)
+//     {
+//         cout << prompt;
+//         getline(cin, input);
+//         try
+//         {
+//             return stoi(input);
+//         }
+//         catch (...)
+//         {
+//             cout << "Please type a number.\n";
+//         }
+//     }
+// }
 
-static void menuDeleteChar(Document& doc) {
-    try {
-        int line = readInt("Line number: ") - 1;
-        string word;
-        cout << "Word on that line: ";
-        getline(cin, word);
-        string c;
-        cout << "Character to remove: ";
-        getline(cin, c);
-        if (c.size() != 1) {
-            throw EditorError("Type exactly one character");
-        }
+// static void menuDeleteWord(Document& doc) {
+//     try {
+//         int line = readInt("Line number: ") - 1;          // the user counts from 1
+//         string word;
+//         cout << "Word to delete: ";
+//         getline(cin, word);
 
-        int which = 1;
-        int total = doc.countWordOnLine(line, word);
-        if (total == 0) {
-            throw EditorError("Word not found on that line");
-        }
-        if (total > 1) {
-            cout << "\"" << word << "\" appears " << total << " times on this line.\n";
-            which = readInt("Which one? (1 = leftmost): ");
-        }
-        doc.deleteCharInWord(line, word, c[0], which);
-        cout << "Character removed.\n";
-    } catch (EditorError& e) {
-        cout << "Error: " << e.what() << ".\n";
-    }
-}
+//         int which = 1;
+//         int total = doc.countWordOnLine(line, word);      // throws if the line or word is bad
+//         if (total == 0) {
+//             throw EditorError("Word not found on that line");
+//         }
+//         if (total > 1) {
+//             cout << "\"" << word << "\" appears " << total << " times on this line.\n";
+//             which = readInt("Delete which one? (1 = leftmost): ");
+//         }
+//         doc.deleteWordOnLine(line, word, which);
+//         cout << "Word deleted.\n";
+//     } catch (EditorError& e) {
+//         cout << "Error: " << e.what() << ".\n";
+//     }
+// }
+
+// static void menuDeleteChar(Document& doc) {
+//     try {
+//         int line = readInt("Line number: ") - 1;
+//         string word;
+//         cout << "Word on that line: ";
+//         getline(cin, word);
+//         string c;
+//         cout << "Character to remove: ";
+//         getline(cin, c);
+//         if (c.size() != 1) {
+//             throw EditorError("Type exactly one character");
+//         }
+
+//         int which = 1;
+//         int total = doc.countWordOnLine(line, word);
+//         if (total == 0) {
+//             throw EditorError("Word not found on that line");
+//         }
+//         if (total > 1) {
+//             cout << "\"" << word << "\" appears " << total << " times on this line.\n";
+//             which = readInt("Which one? (1 = leftmost): ");
+//         }
+//         doc.deleteCharInWord(line, word, c[0], which);
+//         cout << "Character removed.\n";
+//     } catch (EditorError& e) {
+//         cout << "Error: " << e.what() << ".\n";
+//     }
+// }
