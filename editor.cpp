@@ -75,6 +75,33 @@ Position endOf(Position start, const string& text) {
     return result;
 }
 
+// Find the n-th (1-based) WHOLE-WORD copy of 'word' inside 'text'.
+// Returns where it starts (0-based), or -1 if there is no n-th copy.
+// "Whole word" = the letters just before and just after are NOT word letters,
+// so "the" is not found inside "other".
+int findNthWord(const string& text, const string& word, int n) {
+    int len = (int)text.size();
+    int m = (int)word.size();
+    int seen = 0;
+    for (int i = 0; i + m <= len; i++) {
+        int j = 0;
+        while (j < m && text[i + j] == word[j]) {
+            j++;
+        }
+        if (j == m) {
+            bool leftOk  = (i == 0)       || !isWordChar(text[i - 1]);
+            bool rightOk = (i + m == len) || !isWordChar(text[i + m]);
+            if (leftOk && rightOk) {
+                seen++;
+                if (seen == n) {
+                    return i;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
 // ===== SECTION 1: Line list (M1) =====
 
 
@@ -382,6 +409,7 @@ private:
 
     void record(const Operation& note);        // put a note on the undo pile
     void checkPosition(Position p) const;      // throws EditorError if p is not a real spot
+      Position locateWord(int line, const string& word, int which) const;
 
 public:
     Document();
@@ -412,6 +440,9 @@ public:
     // delete
     void deleteChar(Position pos);
     void deleteWord(Position pos);
+        int  countWordOnLine(int line, const string& word) const;
+    void deleteWordOnLine(int line, const string& word, int which);
+    void deleteCharInWord(int line, const string& word, char ch, int which);
     void deleteLines(int firstLine, int lastLine);
     // undo / redo
     void beginGroup();
@@ -665,9 +696,128 @@ void Document::insertBlankLineBefore(int line) {
 
 // ---------- 6C. DELETE ----------
 // deleteChar and deleteWord: OWNER: MEMBER B
-void Document::deleteChar(Position pos)           { (void)pos; throw EditorError("TODO"); }
-void Document::deleteWord(Position pos)           { (void)pos; throw EditorError("TODO"); }
+// Delete ONE character at pos.
+// If pos is at the END of a line (col == line length), the thing to delete is
+// the line break: from (line, len) to (line+1, 0), so the next line joins this one.
+// Throws EditorError if there is nothing to delete.
+void Document::deleteChar(Position pos) {
+    checkPosition(pos);                       // the line and column must exist
 
+    Line* card = lines.getNode(pos.line);
+    int len = (int)card->text.size();
+
+    Position after;                           // the spot just AFTER what we delete
+    if (pos.col < len) {
+        after.line = pos.line;                // a letter: delete up to the next column
+        after.col  = pos.col + 1;
+    } else {
+        if (pos.line == lines.size() - 1) {   // end of the LAST line: no line break there
+            throw EditorError("Nothing to delete");
+        }
+        after.line = pos.line + 1;            // the line break: (line, len) -> (line+1, 0)
+        after.col  = 0;
+    }
+    deleteRange(pos, after);                  // removes it AND puts one note on the undo pile
+}
+
+// Delete the WORD at pos (plus one neighbouring space, so no double space is left).
+// pos may be anywhere inside the word, or just after its last letter.
+// Throws EditorError if there is no word at pos.
+void Document::deleteWord(Position pos) {
+    checkPosition(pos);
+
+    Line* card = lines.getNode(pos.line);
+    const string& text = card->text;
+    int len = (int)text.size();
+
+    // 1. find one letter that belongs to the word
+    int hit;
+    if (pos.col < len && isWordChar(text[pos.col])) {
+        hit = pos.col;                        // pos is on a word letter
+    } else if (pos.col > 0 && isWordChar(text[pos.col - 1])) {
+        hit = pos.col - 1;                    // pos is just after a word
+    } else {
+        throw EditorError("No word at this position");
+    }
+
+    // 2. walk left and right to find where the word starts and ends
+    int start = hit;
+    while (start > 0 && isWordChar(text[start - 1])) {
+        start--;
+    }
+    int end = hit + 1;                        // end is just AFTER the last letter
+    while (end < len && isWordChar(text[end])) {
+        end++;
+    }
+
+    // 3. also remove one space: after the word if there is one, else before it
+    if (end < len && text[end] == ' ') {
+        end++;
+    } else if (start > 0 && text[start - 1] == ' ') {
+        start--;
+    }
+
+    // 4. delete the range (one undoable step)
+    Position a;
+    a.line = pos.line;
+    a.col  = start;
+    Position b;
+    b.line = pos.line;
+    b.col  = end;
+    deleteRange(a, b);
+}
+
+// How many times does 'word' appear (as a whole word) on line number 'line' (0-based)?
+// The menu calls this first: if the answer is 2 or more, it asks the user "which one?".
+int Document::countWordOnLine(int line, const string& word) const {
+    if (word.empty()) {
+        throw EditorError("The word is empty");
+    }
+    for (int i = 0; i < (int)word.size(); i++) {
+        if (!isWordChar(word[i])) {
+            throw EditorError("Type ONE word (letters, digits or underscore)");
+        }
+    }
+    Line* card = lines.getNode(line);            // throws "Line number out of range"
+    int total = 0;
+    while (findNthWord(card->text, word, total + 1) != -1) {
+        total++;
+    }
+    return total;
+}
+
+// Where does copy number 'which' (1 = leftmost) of 'word' start on line 'line'?
+// Throws if the word is not there or 'which' is too big.
+Position Document::locateWord(int line, const string& word, int which) const {
+    int total = countWordOnLine(line, word);     // also checks line and word
+    if (total == 0) {
+        throw EditorError("Word not found on that line");
+    }
+    if (which < 1 || which > total) {
+        throw EditorError("That occurrence does not exist");
+    }
+    Position p;
+    p.line = line;
+    p.col  = findNthWord(lines.getNode(line)->text, word, which);
+    return p;
+}
+
+// Delete copy number 'which' of 'word' on line 'line'.
+void Document::deleteWordOnLine(int line, const string& word, int which) {
+    Position p = locateWord(line, word, which);
+    deleteWord(p);                               // does the real work + the undo note
+}
+
+// Delete the first 'ch' inside copy number 'which' of 'word' on line 'line'.
+void Document::deleteCharInWord(int line, const string& word, char ch, int which) {
+    Position p = locateWord(line, word, which);
+    size_t k = word.find(ch);                    // where is ch inside the word?
+    if (k == string::npos) {
+        throw EditorError("That character is not in the word");
+    }
+    p.col = p.col + (int)k;                      // the spot of that letter on the line
+    deleteChar(p);                               // does the real work + the undo note
+}
 // deleteLines: OWNER: STARTER (done). Kept by the starter because cutLines needs it.
 // Removes whole lines firstLine..lastLine (both included, 0-based) as ONE undoable step.
 // The document must never have 0 lines, so there are three cases:
@@ -715,10 +865,87 @@ void Document::redo()                             { throw EditorError("TODO"); }
 
 
 // ---------- 6E. SEARCH / REPLACE ----------  OWNER: MEMBER B
+// Find every copy of 'pattern' in the whole document and add each hit to 'found'.
+// Works like the Find box of a real editor:
+//   - every line is scanned ONCE (KMP), so it stays fast on long documents
+//   - hits never overlap: after a hit, the next search starts AFTER it ("aa" in "aaaa" = 2 hits)
+//   - hits come in reading order (top to bottom, left to right)
+// Line and column in each Match count from 0 (the menu adds 1 when it prints).
+// Throws EditorError if the pattern is empty.
+// Time: O(m) once for the pattern + O(N) for the scan (N = all letters in the document).
 void Document::findAll(const string& pattern, bool ignoreCase, bool wholeWord,
                        DynArray<Match>& found) const {
-    (void)pattern; (void)ignoreCase; (void)wholeWord; (void)found;
-    throw EditorError("TODO");
+    if (pattern.empty()) {
+        throw EditorError("Search pattern is empty");
+    }
+    int m = (int)pattern.size();
+
+    // 1. make the pattern small letters ONCE (the text is never copied or changed)
+    string p = pattern;
+    if (ignoreCase) {
+        for (int i = 0; i < m; i++) {
+            p[i] = toLowerChar(p[i]);
+        }
+    }
+
+    // 2. build the KMP table ONCE for the whole search:
+    //    lps[i] = how many letters at the END of p[0..i] are also the START of p
+    //    (it tells us how far to fall back after a mismatch, so we never re-read the text)
+    DynArray<int> lps;
+    lps.add(0);
+    int len = 0;
+    for (int i = 1; i < m; i++) {
+        while (len > 0 && p[i] != p[len]) {
+            len = lps.get(len - 1);
+        }
+        if (p[i] == p[len]) {
+            len++;
+        }
+        lps.add(len);
+    }
+
+    // 3. scan every line once
+    int lineNo = 0;                                        // 0 = first line
+    for (Line* card = lines.first(); card != nullptr; card = card->next) {
+        const string& text = card->text;
+        int n = (int)text.size();
+
+        if (n >= m) {                                      // a shorter line cannot contain it
+            int j = 0;                                     // how many letters of p match right now
+            for (int i = 0; i < n; i++) {
+                char c = text[i];
+                if (ignoreCase) {
+                    c = toLowerChar(c);
+                }
+                while (j > 0 && c != p[j]) {
+                    j = lps.get(j - 1);                    // mismatch: fall back, do NOT go back in the text
+                }
+                if (c == p[j]) {
+                    j++;
+                }
+
+                if (j == m) {                              // all m letters matched, ending at i
+                    int start = i - m + 1;
+                    bool ok = true;
+                    if (wholeWord) {                       // letters just before/after must not be word letters
+                        bool leftOk  = (start == 0) || !isWordChar(text[start - 1]);
+                        bool rightOk = (i + 1 == n) || !isWordChar(text[i + 1]);
+                        ok = leftOk && rightOk;
+                    }
+                    if (ok) {
+                        Match hit;
+                        hit.line = lineNo;
+                        hit.col  = start;
+                        found.add(hit);
+                        j = 0;                             // next hit must start AFTER this one
+                    } else {
+                        j = lps.get(m - 1);                // rejected: keep looking, overlap allowed
+                    }
+                }
+            }
+        }
+        lineNo++;
+    }
 }
 void Document::replaceOne(const string& pattern, const string& replacement, int k,
                           bool ignoreCase, bool wholeWord) {
@@ -799,8 +1026,6 @@ void Document::pasteLinesBefore(int line) {
     insertAt(startOfLine, clipboard + "\n");
 }
 
-
-// ===== SECTION 7: menu and main() =====  (OWNER: MEMBER C)
 // ===== SECTION 7: menu and main() =====  (OWNER: MEMBER C)
 
 // ---------- 7A. menu helpers ----------
@@ -1208,4 +1433,76 @@ int main(int argc, char* argv[]) {
     }
     runMenu();
     return 0;
+
+// ---------------------------------------------------------------
+// Helper: read an integer safely
+// ---------------------------------------------------------------
+int readInt(const string &prompt)
+{
+    string input;
+    while (true)
+    {
+        cout << prompt;
+        getline(cin, input);
+        try
+        {
+            return stoi(input);
+        }
+        catch (...)
+        {
+            cout << "Please type a number.\n";
+        }
+    }
+}
+
+static void menuDeleteWord(Document& doc) {
+    try {
+        int line = readInt("Line number: ") - 1;          // the user counts from 1
+        string word;
+        cout << "Word to delete: ";
+        getline(cin, word);
+
+        int which = 1;
+        int total = doc.countWordOnLine(line, word);      // throws if the line or word is bad
+        if (total == 0) {
+            throw EditorError("Word not found on that line");
+        }
+        if (total > 1) {
+            cout << "\"" << word << "\" appears " << total << " times on this line.\n";
+            which = readInt("Delete which one? (1 = leftmost): ");
+        }
+        doc.deleteWordOnLine(line, word, which);
+        cout << "Word deleted.\n";
+    } catch (EditorError& e) {
+        cout << "Error: " << e.what() << ".\n";
+    }
+}
+
+static void menuDeleteChar(Document& doc) {
+    try {
+        int line = readInt("Line number: ") - 1;
+        string word;
+        cout << "Word on that line: ";
+        getline(cin, word);
+        string c;
+        cout << "Character to remove: ";
+        getline(cin, c);
+        if (c.size() != 1) {
+            throw EditorError("Type exactly one character");
+        }
+
+        int which = 1;
+        int total = doc.countWordOnLine(line, word);
+        if (total == 0) {
+            throw EditorError("Word not found on that line");
+        }
+        if (total > 1) {
+            cout << "\"" << word << "\" appears " << total << " times on this line.\n";
+            which = readInt("Which one? (1 = leftmost): ");
+        }
+        doc.deleteCharInWord(line, word, c[0], which);
+        cout << "Character removed.\n";
+    } catch (EditorError& e) {
+        cout << "Error: " << e.what() << ".\n";
+    }
 }
