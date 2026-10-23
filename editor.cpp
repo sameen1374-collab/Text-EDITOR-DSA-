@@ -1026,8 +1026,413 @@ void Document::pasteLinesBefore(int line) {
     insertAt(startOfLine, clipboard + "\n");
 }
 
-
 // ===== SECTION 7: menu and main() =====  (OWNER: MEMBER C)
+
+// ---------- 7A. menu helpers ----------
+
+// Build a Position from 0-based numbers.
+Position makePos(int line, int col) {
+    Position p;
+    p.line = line;
+    p.col = col;
+    return p;
+}
+
+// Ask for text. Quits cleanly if the input stream is closed.
+string readString(const string& prompt) {
+    cout << prompt;
+    string s;
+    if (!getline(cin, s)) {
+        cout << "\nInput closed. Goodbye.\n";
+        exit(0);
+    }
+    return s;
+}
+
+// Ask for a whole number. Keeps asking until the user types a valid one.
+int readInt(const string& prompt) {
+    while (true) {
+        string s = readString(prompt);
+        try {
+            size_t used = 0;
+            int value = stoi(s, &used);
+            if (used == s.size()) {
+                return value;
+            }
+        } catch (...) {
+            // fall through to the message below
+        }
+        cout << "Please type a whole number.\n";
+    }
+}
+
+// Ask a yes/no question.
+bool askYesNo(const string& prompt) {
+    while (true) {
+        string s = readString(prompt + " (y/n): ");
+        if (s == "y" || s == "Y") return true;
+        if (s == "n" || s == "N") return false;
+        cout << "Please type y or n.\n";
+    }
+}
+
+// The user types from 1, the code counts from 0: convert HERE and only here.
+int readLineNumber(const string& prompt) {
+    return readInt(prompt) - 1;
+}
+
+Position readPosition(const string& what) {
+    cout << what << "\n";
+    int line = readLineNumber("  Line number: ");
+    int col  = readInt("  Column number (1 = before the first letter): ") - 1;
+    return makePos(line, col);
+}
+
+void printMenu() {
+    cout << "\n===== TEXT EDITOR =====\n"
+         << " 1. New document           2. Open file\n"
+         << " 3. Save                   4. Save as\n"
+         << " 5. Insert text            6. Press Enter (split line)\n"
+         << " 7. Blank line after       8. Blank line before\n"
+         << " 9. Delete character      10. Delete word\n"
+         << "11. Delete lines          12. Undo\n"
+         << "13. Redo                  14. Find\n"
+         << "15. Replace one           16. Replace all\n"
+         << "17. Copy range            18. Copy lines\n"
+         << "19. Cut range             20. Cut lines\n"
+         << "21. Paste at spot         22. Paste lines before\n"
+         << "23. Show document         24. Run tests\n"
+         << " 0. Exit\n";
+}
+
+// Ask whether to save before leaving. Returns false if the user cancels.
+bool confirmLeaveUnsaved(Document& doc) {
+    if (!doc.isDirty()) return true;
+    if (askYesNo("You have unsaved changes. Save first?")) {
+        if (doc.hasFilename()) {
+            doc.saveFile();
+        } else {
+            doc.saveFileAs(readString("File name: "));
+        }
+    }
+    return true;
+}
+
+// ---------- 7B. tests ----------
+
+int testsPassed = 0;
+int testsFailed = 0;
+
+void check(const string& name, bool ok) {
+    if (ok) { testsPassed++; cout << "  [PASS] " << name << "\n"; }
+    else    { testsFailed++; cout << "  [FAIL] " << name << "\n"; }
+}
+
+// Used for "this should throw EditorError" tests: pass the result of a try/catch.
+void checkThrows(const string& name, bool threw) {
+    check(name + " (should throw)", threw);
+}
+
+void runTests() {
+    testsPassed = 0;
+    testsFailed = 0;
+
+    cout << "\n-- Section 0 helpers --\n";
+    check("isBefore same line", isBefore(makePos(0, 1), makePos(0, 2)));
+    check("isBefore different line", isBefore(makePos(0, 9), makePos(1, 0)));
+    check("isBefore equal is false", !isBefore(makePos(1, 1), makePos(1, 1)));
+    check("isSame", isSame(makePos(2, 3), makePos(2, 3)));
+    check("isWordChar letter/digit/_", isWordChar('a') && isWordChar('Z') && isWordChar('5') && isWordChar('_'));
+    check("isWordChar space is false", !isWordChar(' '));
+    check("toLowerChar", toLowerChar('A') == 'a' && toLowerChar('b') == 'b' && toLowerChar('1') == '1');
+    Position e1 = endOf(makePos(0, 3), "abc");
+    check("endOf no line break", e1.line == 0 && e1.col == 6);
+    Position e2 = endOf(makePos(0, 3), "ab\ncde");
+    check("endOf with line break", e2.line == 1 && e2.col == 3);
+
+    cout << "\n-- LineList --\n";
+    {
+        LineList list;
+        list.append("a");
+        list.append("c");
+        list.insertAfter(list.getNode(0), "b");
+        check("size after inserts", list.size() == 3);
+        check("order a,b,c", list.getNode(0)->text == "a" && list.getNode(1)->text == "b" && list.getNode(2)->text == "c");
+        list.checkIntegrity();
+        list.removeNode(list.getNode(1));
+        check("size after remove", list.size() == 2);
+        list.checkIntegrity();
+        bool threw = false;
+        try { list.getNode(5); } catch (EditorError&) { threw = true; }
+        checkThrows("getNode out of range", threw);
+    }
+
+    cout << "\n-- Stack --\n";
+    {
+        Stack<int> s;
+        s.push(1);
+        s.push(2);
+        check("top is last pushed", s.top() == 2);
+        check("pop gives last pushed", s.pop() == 2);
+        check("size after pop", s.size() == 1);
+        s.pop();
+        check("empty after popping all", s.isEmpty());
+        bool threw = false;
+        try { s.pop(); } catch (EditorError&) { threw = true; }
+        checkThrows("pop on empty stack", threw);
+    }
+
+    cout << "\n-- DynArray --\n";
+    {
+        DynArray<int> arr;
+        for (int i = 0; i < 20; i++) arr.add(i * 2);   // forces several growths
+        check("size after 20 adds", arr.size() == 20);
+        check("values kept after growing", arr.get(0) == 0 && arr.get(19) == 38);
+        bool threw = false;
+        try { arr.get(20); } catch (EditorError&) { threw = true; }
+        checkThrows("get out of range", threw);
+    }
+
+    cout << "\n-- Document: insert --\n";
+    {
+        Document d;
+        check("new document is empty", d.isEmpty() && d.lineCount() == 1);
+        check("new document is not dirty", !d.isDirty());
+        d.insertText(makePos(0, 0), "hello world");
+        check("insert text", d.getText(makePos(0, 0), makePos(0, 11)) == "hello world");
+        check("charCount", d.charCount() == 11);
+        check("dirty after insert", d.isDirty());
+        d.insertText(makePos(0, 5), "\nabc");
+        check("insert with line break adds a line", d.lineCount() == 2);
+        check("text across lines", d.getText(makePos(0, 0), makePos(1, 3)) == "hello\nabc");
+        d.insertNewLine(makePos(0, 2));
+        check("insertNewLine splits the line", d.lineCount() == 3);
+        check("render of first line", d.renderLines(0, 0) == "1 | he\n");
+        d.insertBlankLineAfter(0);
+        check("blank line after", d.lineCount() == 4 && d.renderLines(1, 1) == "2 | \n");
+        d.insertBlankLineBefore(0);
+        check("blank line before", d.lineCount() == 5);
+    }
+
+    cout << "\n-- Document: delete --\n";
+    {
+        Document d;
+        d.insertText(makePos(0, 0), "hello world");
+        string removed = d.deleteRange(makePos(0, 5), makePos(0, 11));
+        check("deleteRange returns removed text", removed == " world");
+        check("text after deleteRange", d.getText(makePos(0, 0), makePos(0, 5)) == "hello");
+
+        Document m;
+        m.insertText(makePos(0, 0), "one\ntwo\nthree");
+        m.deleteLines(1, 1);
+        check("deleteLines middle", m.lineCount() == 2 && m.renderLines(1, 1) == "2 | three\n");
+        m.deleteLines(1, 1);
+        check("deleteLines last line", m.lineCount() == 1);
+        m.deleteLines(0, 0);
+        check("deleteLines whole document keeps 1 line", m.lineCount() == 1 && m.isEmpty());
+        bool threw = false;
+        try { m.deleteLines(0, 0); } catch (EditorError&) { threw = true; }
+        checkThrows("deleteLines on empty document", threw);
+    }
+
+    cout << "\n-- Document: clipboard --\n";
+    {
+        Document d;
+        d.insertText(makePos(0, 0), "abc");
+        d.copyRange(makePos(0, 0), makePos(0, 2));
+        d.pasteAt(makePos(0, 3));
+        check("copy then paste", d.getText(makePos(0, 0), makePos(0, 5)) == "abcab");
+
+        Document c;
+        c.insertText(makePos(0, 0), "one\ntwo");
+        c.cutLines(0, 0);
+        check("cutLines removes the line", c.lineCount() == 1 && c.renderLines(0, 0) == "1 | two\n");
+        c.pasteLinesBefore(0);
+        check("pasteLinesBefore puts it back", c.lineCount() == 2 && c.renderLines(0, 0) == "1 | one\n");
+
+        Document n;
+        bool threw = false;
+        try { n.pasteAt(makePos(0, 0)); } catch (EditorError&) { threw = true; }
+        checkThrows("paste with empty clipboard", threw);
+    }
+
+    cout << "\n-- Document: error handling --\n";
+    {
+        Document d;
+        d.insertText(makePos(0, 0), "abc");
+        bool t1 = false, t2 = false, t3 = false, t4 = false;
+        try { d.insertText(makePos(0, 0), ""); } catch (EditorError&) { t1 = true; }
+        checkThrows("insert empty text", t1);
+        try { d.insertText(makePos(9, 0), "x"); } catch (EditorError&) { t2 = true; }
+        checkThrows("insert on a line that does not exist", t2);
+        try { d.insertText(makePos(0, 99), "x"); } catch (EditorError&) { t3 = true; }
+        checkThrows("insert at a column that does not exist", t3);
+        try { d.getText(makePos(0, 2), makePos(0, 1)); } catch (EditorError&) { t4 = true; }
+        checkThrows("getText with start after end", t4);
+        check("document unchanged after failed edits", d.getText(makePos(0, 0), makePos(0, 3)) == "abc");
+    }
+
+    // TODO (after Members A and B finish): add tests for
+    // undo/redo, openFile/saveFile, deleteChar, deleteWord, findAll, replaceOne, replaceAll.
+
+    cout << "\nResult: " << testsPassed << " passed, " << testsFailed << " failed.\n";
+}
+
+// ---------- 7C. the menu ----------
+
+void runMenu() {
+    Document doc;
+    while (true) {
+        printMenu();
+        int choice = readInt("Choose an option: ");
+        try {
+            switch (choice) {
+            case 0:
+                if (confirmLeaveUnsaved(doc)) {
+                    cout << "Goodbye.\n";
+                    return;
+                }
+                break;
+            case 1:
+                if (confirmLeaveUnsaved(doc)) {
+                    doc.newDocument();
+                    cout << "New document created.\n";
+                }
+                break;
+            case 2: {
+                if (confirmLeaveUnsaved(doc)) {
+                    doc.openFile(readString("File name: "));
+                    cout << "File opened.\n";
+                }
+                break;
+            }
+            case 3:
+                if (doc.hasFilename()) {
+                    doc.saveFile();
+                } else {
+                    doc.saveFileAs(readString("File name: "));
+                }
+                cout << "Saved.\n";
+                break;
+            case 4:
+                doc.saveFileAs(readString("File name: "));
+                cout << "Saved.\n";
+                break;
+            case 5: {
+                Position p = readPosition("Where to insert?");
+                doc.insertText(p, readString("Text: "));
+                break;
+            }
+            case 6:
+                doc.insertNewLine(readPosition("Where to split the line?"));
+                break;
+            case 7:
+                doc.insertBlankLineAfter(readLineNumber("Insert a blank line after line number: "));
+                break;
+            case 8:
+                doc.insertBlankLineBefore(readLineNumber("Insert a blank line before line number: "));
+                break;
+            case 9:
+                doc.deleteChar(readPosition("Delete the character at:"));
+                break;
+            case 10:
+                doc.deleteWord(readPosition("Delete the word at:"));
+                break;
+            case 11: {
+                int first = readLineNumber("First line to delete: ");
+                int last  = readLineNumber("Last line to delete: ");
+                doc.deleteLines(first, last);
+                break;
+            }
+            case 12:
+                doc.undo();
+                break;
+            case 13:
+                doc.redo();
+                break;
+            case 14: {
+                string pattern = readString("Search for: ");
+                bool ic = askYesNo("Ignore upper/lower case?");
+                bool ww = askYesNo("Whole words only?");
+                DynArray<Match> found;
+                doc.findAll(pattern, ic, ww, found);
+                cout << found.size() << " match(es).\n";
+                for (int i = 0; i < found.size(); i++) {
+                    cout << "  #" << (i + 1) << ": line " << (found.get(i).line + 1)
+                         << ", column " << (found.get(i).col + 1) << "\n";
+                }
+                break;
+            }
+            case 15: {
+                string pattern = readString("Search for: ");
+                string repl = readString("Replace with: ");
+                int k = readInt("Which match number (1 = first)? ") - 1;
+                bool ic = askYesNo("Ignore upper/lower case?");
+                bool ww = askYesNo("Whole words only?");
+                doc.replaceOne(pattern, repl, k, ic, ww);
+                break;
+            }
+            case 16: {
+                string pattern = readString("Search for: ");
+                string repl = readString("Replace with: ");
+                bool ic = askYesNo("Ignore upper/lower case?");
+                bool ww = askYesNo("Whole words only?");
+                int n = doc.replaceAll(pattern, repl, ic, ww);
+                cout << n << " replacement(s) made.\n";
+                break;
+            }
+            case 17: {
+                Position a = readPosition("Copy FROM:");
+                Position b = readPosition("Copy UP TO (not included):");
+                doc.copyRange(a, b);
+                break;
+            }
+            case 18: {
+                int first = readLineNumber("First line to copy: ");
+                int last  = readLineNumber("Last line to copy: ");
+                doc.copyLines(first, last);
+                break;
+            }
+            case 19: {
+                Position a = readPosition("Cut FROM:");
+                Position b = readPosition("Cut UP TO (not included):");
+                doc.cutRange(a, b);
+                break;
+            }
+            case 20: {
+                int first = readLineNumber("First line to cut: ");
+                int last  = readLineNumber("Last line to cut: ");
+                doc.cutLines(first, last);
+                break;
+            }
+            case 21:
+                doc.pasteAt(readPosition("Paste at:"));
+                break;
+            case 22:
+                doc.pasteLinesBefore(readLineNumber("Paste above line number: "));
+                break;
+            case 23:
+                cout << "\n" << doc.render();
+                break;
+            case 24:
+                runTests();
+                break;
+            default:
+                cout << "Unknown option. Choose a number from the menu.\n";
+            }
+        } catch (EditorError& e) {
+            cout << "Error: " << e.what() << "\n";    // every editor problem ends up here
+        }
+    }
+}
+
+int main(int argc, char* argv[]) {
+    if (argc > 1 && string(argv[1]) == "--test") {
+        runTests();
+        return testsFailed == 0 ? 0 : 1;
+    }
+    runMenu();
+    return 0;
 
 // ---------------------------------------------------------------
 // Helper: read an integer safely
