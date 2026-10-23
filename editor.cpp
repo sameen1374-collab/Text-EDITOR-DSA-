@@ -653,12 +653,85 @@ string Document::render() const {
 
 
 // ---------- 6A. FILES + (see 6D for undo) ----------  OWNER: MEMBER A
-void Document::newDocument()                      { throw EditorError("TODO"); }
-void Document::openFile(const string& path)       { (void)path; throw EditorError("TODO"); }
-void Document::saveFile()                         { throw EditorError("TODO"); }
-void Document::saveFileAs(const string& path)     { (void)path; throw EditorError("TODO"); }
-
-
+ 
+void Document::newDocument() {
+    lines.clear();
+    lines.append("");            // document must always have at least 1 line
+    undoStack.clear();
+    redoStack.clear();
+    filename = "";
+    dirty = false;
+    nextGroupId = 0;
+    activeGroup = -1;
+}
+ 
+void Document::openFile(const string& path) {
+    ifstream in(path);
+    if (!in) {
+        throw EditorError("Cannot open file: " + path);
+    }
+ 
+    // Read the whole file first: if it fails, the current document stays untouched
+    DynArray<string> loaded;
+    string row;
+    while (getline(in, row)) {
+        if (!row.empty() && row[row.size() - 1] == '\r') {
+            row.erase(row.size() - 1);       // remove '\r' from Windows files
+        }
+        loaded.add(row);
+    }
+    if (in.bad()) {
+        throw EditorError("Error while reading file: " + path);
+    }
+ 
+    lines.clear();
+    for (int i = 0; i < loaded.size(); i++) {
+        lines.append(loaded.get(i));
+    }
+    if (lines.size() == 0) {
+        lines.append("");                    // empty file -> one empty line
+    }
+ 
+    undoStack.clear();
+    redoStack.clear();
+    filename = path;
+    dirty = false;
+    nextGroupId = 0;
+    activeGroup = -1;
+}
+ 
+void Document::saveFile() {
+    if (filename.empty()) {
+        throw EditorError("No file name yet. Use Save As");
+    }
+    saveFileAs(filename);
+}
+ 
+void Document::saveFileAs(const string& path) {
+    if (path.empty()) {
+        throw EditorError("File name is empty");
+    }
+ 
+    ofstream out(path);
+    if (!out) {
+        throw EditorError("Cannot create file: " + path);
+    }
+ 
+    // Every line is written followed by '\n' (openFile reads it back the same way)
+    for (Line* card = lines.first(); card != nullptr; card = card->next) {
+        out << card->text << '\n';
+    }
+ 
+    out.close();
+    if (out.fail()) {
+        throw EditorError("Error while writing file: " + path);
+    }
+ 
+    filename = path;
+    dirty = false;
+}
+ 
+ 
 // ---------- 6B. INSERT ----------  OWNER: STARTER (done)
 
 // Add text at a spot. insertAt already checks the spot, rejects empty text
@@ -858,11 +931,73 @@ void Document::deleteLines(int firstLine, int lastLine) {
 
 
 // ---------- 6D. UNDO / REDO ----------  OWNER: MEMBER A
-void Document::beginGroup()                       { throw EditorError("TODO"); }
-void Document::endGroup()                         { throw EditorError("TODO"); }
-void Document::undo()                             { throw EditorError("TODO"); }
-void Document::redo()                             { throw EditorError("TODO"); }
-
+// Undo of Insert = delete that text. Undo of Delete = insert that text back.
+// Notes with the same 'group' number are undone / redone together.
+// saveNote = false everywhere, so undo/redo do not create new notes.
+ 
+void Document::beginGroup() {
+    if (activeGroup != -1) {
+        throw EditorError("A group is already open");
+    }
+    activeGroup = nextGroupId;
+    nextGroupId++;
+}
+ 
+void Document::endGroup() {
+    if (activeGroup == -1) {
+        throw EditorError("No group is open");
+    }
+    activeGroup = -1;
+}
+ 
+void Document::undo() {
+    if (activeGroup != -1) {
+        throw EditorError("Close the group before undo");
+    }
+    if (undoStack.isEmpty()) {
+        throw EditorError("Nothing to undo");
+    }
+ 
+    int g = undoStack.top().group;
+ 
+    // Newest note first = correct order for undoing
+    while (!undoStack.isEmpty() && undoStack.top().group == g) {
+        Operation op = undoStack.pop();
+ 
+        if (op.type == OpType::Insert) {
+            deleteRange(op.start, endOf(op.start, op.text), false);
+        } else {
+            insertAt(op.start, op.text, false);
+        }
+ 
+        redoStack.push(op);
+    }
+}
+ 
+void Document::redo() {
+    if (activeGroup != -1) {
+        throw EditorError("Close the group before redo");
+    }
+    if (redoStack.isEmpty()) {
+        throw EditorError("Nothing to redo");
+    }
+ 
+    int g = redoStack.top().group;
+ 
+    // Oldest note is on top, so notes are replayed in the original order
+    while (!redoStack.isEmpty() && redoStack.top().group == g) {
+        Operation op = redoStack.pop();
+ 
+        if (op.type == OpType::Insert) {
+            insertAt(op.start, op.text, false);
+        } else {
+            deleteRange(op.start, endOf(op.start, op.text), false);
+        }
+ 
+        undoStack.push(op);      // NOT record(): it would clear the rest of redoStack
+    }
+}
+ 
 
 // ---------- 6E. SEARCH / REPLACE ----------  OWNER: MEMBER B
 // Find every copy of 'pattern' in the whole document and add each hit to 'found'.
