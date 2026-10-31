@@ -1282,6 +1282,48 @@ Position readPosition(const string& what) {
     return makePos(line, col);
 }
 
+// Menu: delete a word. The user gives the line number and the word.
+// If the word is on that line more than once, we ask which one.
+void menuDeleteWord(Document& doc) {
+    int line = readLineNumber("Line number: ");
+    string word = readString("Word to delete: ");
+
+    int total = doc.countWordOnLine(line, word);       // throws if the line or the word is bad
+    if (total == 0) {
+        throw EditorError("Word not found on that line");
+    }
+    int which = 1;
+    if (total > 1) {
+        cout << "\"" << word << "\" appears " << total << " times on that line.\n";
+        which = readInt("Delete which one? (1 = leftmost): ");
+    }
+    doc.deleteWordOnLine(line, word, which);
+    cout << "Word deleted.\n";
+}
+
+// Menu: delete one character inside a word. The user gives the line number,
+// the word on that line, and the character.
+void menuDeleteChar(Document& doc) {
+    int line = readLineNumber("Line number: ");
+    string word = readString("Word on that line: ");
+    string c = readString("Character to remove: ");
+    if (c.size() != 1) {
+        throw EditorError("Type exactly one character");
+    }
+
+    int total = doc.countWordOnLine(line, word);       // throws if the line or the word is bad
+    if (total == 0) {
+        throw EditorError("Word not found on that line");
+    }
+    int which = 1;
+    if (total > 1) {
+        cout << "\"" << word << "\" appears " << total << " times on that line.\n";
+        which = readInt("Which word? (1 = leftmost): ");
+    }
+    doc.deleteCharInWord(line, word, c[0], which);
+    cout << "Character removed.\n";
+}
+
 void printMenu() {
     cout << "\n===== TEXT EDITOR =====\n"
          << " 1. New document           2. Open file\n"
@@ -1526,11 +1568,11 @@ void runMenu() {
             case 8:
                 doc.insertBlankLineBefore(readLineNumber("Insert a blank line before line number: "));
                 break;
-            case 9:
-                doc.deleteChar(readPosition("Delete the character at:"));
+                        case 9:
+                menuDeleteChar(doc);
                 break;
             case 10:
-                doc.deleteWord(readPosition("Delete the word at:"));
+                menuDeleteWord(doc);
                 break;
             case 11: {
                 int first = readLineNumber("First line to delete: ");
