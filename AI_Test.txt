@@ -1,0 +1,7 @@
+Artificial Intelligence is a branch of computer science that focuses on creating machines that can perform tasks requiring human intelligence. It is used in education, healthcare, transportation, and business. Machine learning is a part of AI that allows computers to learn from data and improve their performance. AI saves time, reduces human effort, and helps solve complex problems.
+**Summary:**
+
+**Artificial Intelligence (AI)** is a branch of computer science focused on creating machines that replicate human intelligence to solve complex problems, save time, and reduce human effort.
+
+* **Applications:** Widely used in healthcare, education, transportation, and business.
+* **Key Subset:** *Machine Learning*, which allows computers to automatically learn from data and continuously improve performance.

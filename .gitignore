@@ -1,0 +1,22 @@
+# Compiled executables and build artifacts
+*.exe
+*.o
+*.obj
+*.out
+*.dll
+*.dylib
+*.so
+build/
+
+# IDE and temporary scratch files
+.vscode/
+tempCodeRunnerFile*
+*.swp
+*.bak
+*.log
+
+# Sensitive environment files and credentials
+.env
+*.env
+*.key
+credentials.json
