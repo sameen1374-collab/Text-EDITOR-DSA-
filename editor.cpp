@@ -6,8 +6,6 @@
 #include <cstdlib>     // exit
 #include <cstdio>      // rename
 #include <iomanip>     // setw (tidy menu columns)
-#include <curl/curl.h> // libcurl initialization & cleanup
-#include "AIManager.h" // Textify AI Manager
 #ifdef _WIN32
 #include <conio.h>     // _getch (hidden password)
 #else
@@ -2008,158 +2006,6 @@ bool runLoginScreen(Session& session) {
     }
 }
 
-// ---------- 7B-AI. Textify AI Assistant integration ----------
-
-// Extract full document text safely without modifying the document
-string extractDocumentText(const Document& doc) {
-    string full = "";
-    for (int i = 0; i < doc.lineCount(); i++) {
-        if (i > 0) full += "\n";
-        full += doc.lineText(i);
-    }
-    return full;
-}
-
-// Display AI response in an isolated panel
-void showAIResponse(const AIResult& res) {
-    if (!res.success) {
-        cout << "\n[Textify AI Error] " << res.error << "\n";
-        return;
-    }
-    cout << "\n=======================================================\n"
-         << "                 TEXTIFY AI RESPONSE\n"
-         << "=======================================================\n"
-         << res.text << "\n"
-         << "=======================================================\n";
-}
-
-// Handle non-destructive insertion choices after a successful AI response
-void handleAIInsertion(Document& doc, const string& aiText) {
-    if (aiText.empty()) return;
-
-    cout << "\nWhat would you like to do with this response?\n"
-         << "  1. Append to document\n"
-         << "  2. Insert at a specified line\n"
-         << "  0. Discard (keep document unchanged)\n";
-    int choice = readInt("Choose an option (0-2): ");
-
-    if (choice == 1) {
-        // Safe append: empty documents insert at (0, 0), non-empty at (lastLine, lastCol)
-        if (doc.isEmpty()) {
-            doc.insertAt(makePos(0, 0), aiText, true);
-        } else {
-            int lastLine = doc.lineCount() - 1;
-            int lastCol = doc.lineLength(lastLine);
-            doc.insertAt(makePos(lastLine, lastCol), "\n" + aiText, true);
-        }
-        cout << "Text successfully appended to document.\n";
-        if (askYesNo("Save document changes now?")) {
-            if (doc.hasFilename()) {
-                doc.saveFile();
-                cout << "Saved to " << shortName(doc.getFilename()) << ".\n";
-            } else {
-                doc.saveFileAs(readString("File name: "));
-            }
-        }
-    } else if (choice == 2) {
-        if (doc.isEmpty()) {
-            doc.insertAt(makePos(0, 0), aiText, true);
-            cout << "Document was empty; text inserted as Line 1.\n";
-        } else {
-            int line = readLineNumber("Insert at which line number? ");
-            doc.lineLength(line); // throws EditorError if line does not exist
-            doc.insertAt(makePos(line, 0), aiText + "\n", true);
-            cout << "Text inserted at line " << (line + 1) << ".\n";
-        }
-        if (askYesNo("Save document changes now?")) {
-            if (doc.hasFilename()) {
-                doc.saveFile();
-                cout << "Saved to " << shortName(doc.getFilename()) << ".\n";
-            } else {
-                doc.saveFileAs(readString("File name: "));
-            }
-        }
-    } else {
-        cout << "AI response discarded. Document unchanged.\n";
-    }
-}
-
-// Submenu for Textify AI Assistant
-void runAIMenu(Document& doc) {
-    if (!AIManager::isKeyConfigured()) {
-        cout << "\n[NOTE] GEMINI_API_KEY environment variable is not currently set.\n"
-             << "       Live requests may fail unless configured in your environment.\n";
-    }
-
-    while (true) {
-        cout << "\n===== TEXTIFY AI ASSISTANT =====\n"
-             << "  1. Ask Textify AI\n"
-             << "  2. Summarize Document\n"
-             << "  3. Explain Document\n"
-             << "  4. Generate Key Points\n"
-             << "  5. Grammar Check\n"
-             << "  6. Improve Writing\n"
-             << "  0. Return to Main Menu\n";
-        int choice = readInt("Choose an AI option: ");
-        if (choice == 0) {
-            break;
-        }
-
-        try {
-            AIResult res;
-            if (choice == 1) {
-                // Works without an open document
-                string question = readString("Ask Textify AI a question: ");
-                if (question.empty()) {
-                    cout << "Question cannot be empty.\n";
-                    continue;
-                }
-                string context = "";
-                if (doc.hasFilename() && !doc.isEmpty()) {
-                    if (askYesNo("Include current document text as context?")) {
-                        context = extractDocumentText(doc);
-                    }
-                }
-                cout << "Contacting Textify AI...\n";
-                res = AIManager::ask(question, context);
-            } else if (choice >= 2 && choice <= 6) {
-                // Options 2-6 require an open document and non-empty text
-                if (!doc.hasFilename()) {
-                    throw EditorError("No document is open. Choose 1 (New document) or 2 (Open and edit file) first.");
-                }
-                if (doc.isEmpty()) {
-                    throw EditorError("The document is empty. There is no text to process.");
-                }
-                string text = extractDocumentText(doc);
-                cout << "Contacting Textify AI...\n";
-                if (choice == 2) {
-                    res = AIManager::summarize(text);
-                } else if (choice == 3) {
-                    res = AIManager::explain(text);
-                } else if (choice == 4) {
-                    res = AIManager::generateKeyPoints(text);
-                } else if (choice == 5) {
-                    res = AIManager::checkGrammar(text);
-                } else if (choice == 6) {
-                    res = AIManager::improveWriting(text);
-                }
-            } else {
-                cout << "Unknown option. Please choose 0 to 6.\n";
-                continue;
-            }
-
-            showAIResponse(res);
-            if (res.success && !res.text.empty()) {
-                handleAIInsertion(doc, res.text);
-            }
-        } catch (EditorError& e) {
-            cout << "Error: " << e.what() << "\n";
-        } catch (exception& e) {
-            cout << "Unexpected error: " << e.what() << "\n";
-        }
-    }
-}
-
 // ---------- 7C. the main menu ----------
 
 void menuRow(int a, const string& x, int b, const string& y) {
@@ -2184,8 +2030,8 @@ void printMenu(const Document& doc) {
     menuRow(21, "Paste after a word",       22, "Paste lines before");
     menuRow(23, "Show document",            24, "Merge lines");
     menuRow(25, "Paste lines after",        26, "Word count");
-    menuRow(27, "Textify AI Assistant",     28, "Log out");
-    cout << " 0. Exit\n";
+    cout << "27. Log out\n"
+         << " 0. Exit\n";
 }
 
 // Ask whether to save before leaving. Returns false if the user cancels.
@@ -2385,9 +2231,6 @@ bool runMenu(Session& session) {
                 break;
             }
             case 27:
-                runAIMenu(doc);
-                break;
-            case 28:
                 if (confirmLeaveUnsaved(doc)) {
                     session.email = "";
                     cout << "You are logged out.\n";
@@ -2410,13 +2253,6 @@ bool runMenu(Session& session) {
 }
 
 int main() {
-    CURLcode curlInitRes = curl_global_init(CURL_GLOBAL_DEFAULT);
-    if (curlInitRes != CURLE_OK) {
-        cerr << "Failed to initialize networking system (libcurl initialization error: "
-             << curl_easy_strerror(curlInitRes) << ")\n";
-        return 1;
-    }
-    atexit(curl_global_cleanup);
     Session session;
     while (runLoginScreen(session)) {
         if (!runMenu(session)) {
